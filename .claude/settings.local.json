@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:warcraft.wiki.gg)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl -s \"https://api.github.com/repos/Gethe/wow-ui-source/contents/Interface/AddOns/Blizzard_APIDocumentationGenerated?ref=ptr\")",
+      "Bash(curl -s \"https://api.github.com/repos/Gethe/wow-ui-source/contents/Interface/AddOns/Blizzard_PlayerSpells?ref=ptr\")",
+      "Bash(curl -s \"https://api.github.com/repos/Gethe/wow-ui-source/git/trees/ptr?recursive=1\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_PlayerSpells/ClassTalents/Blizzard_ClassTalentsFrame.lua\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_APIDocumentationGenerated/SharedTraitsDocumentation.lua\")",
+      "Read(//tmp/**)",
+      "Bash(command -v lua lua5.4 lua54 luac luajit)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitAuraDocumentation.lua\")",
+      "Bash(curl -sL \"https://github.com/Gethe/wow-ui-source/archive/refs/heads/ptr.tar.gz\" -o ptr.tar.gz)",
+      "Bash(tar xzf *)",
+      "Bash(curl -s -o /dev/null -w \"live: HTTP %{http_code}\\\\n\" \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/SecretPredicateAPIDocumentation.lua\")",
+      "Bash(curl -s -o /dev/null -w \"ptr:  HTTP %{http_code}\\\\n\" \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_APIDocumentationGenerated/SecretPredicateAPIDocumentation.lua\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/Blizzard_APIDocumentationGenerated.toc\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_APIDocumentationGenerated/Blizzard_APIDocumentationGenerated.toc\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/SecretPredicateAPIDocumentation.lua\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitAuraSharedDocumentation.lua\")"
+    ]
+  }
+}

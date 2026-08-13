@@ -1,0 +1,7 @@
+## Interface: 120007, 120100
+## Title: AeryArcane
+## DefaultState: Enabled
+## Author: Aerylea-TarrenMill-EU
+## Version: 1.0.0
+
+Init.lua
