@@ -18,7 +18,9 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/Blizzard_APIDocumentationGenerated.toc\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/ptr/Interface/AddOns/Blizzard_APIDocumentationGenerated/Blizzard_APIDocumentationGenerated.toc\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/SecretPredicateAPIDocumentation.lua\")",
-      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitAuraSharedDocumentation.lua\")"
+      "Bash(curl -s \"https://raw.githubusercontent.com/Gethe/wow-ui-source/live/Interface/AddOns/Blizzard_APIDocumentationGenerated/UnitAuraSharedDocumentation.lua\")",
+      "PowerShell(Set-Location \"d:\\\\battle.net\\\\World of Warcraft\\\\_retail_\\\\Interface\\\\AddOns\"; try { Rename-Item -Path \"AeryArcane\" -NewName \"ArcaneSoulTracker\" -ErrorAction Stop; \"renamed OK\" } catch { \"FAILED: $\\($_.Exception.Message\\)\" })",
+      "Bash(git mv *)"
     ]
   }
 }

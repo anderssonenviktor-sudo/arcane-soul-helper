@@ -32,6 +32,14 @@ local function AddModule(category, layout, key, title)
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(title))
 
     Settings.CreateCheckbox(category, Register("enabled", Settings.VarType.Boolean, "Enabled"))
+
+    if defaults.showCount ~= nil then
+        Settings.CreateCheckbox(category,
+            Register("showCount", Settings.VarType.Boolean, "Show remaining count"),
+            "Turn off to show only the final cast warning. The count of remaining casts is"
+                .. " predicted from your last global cooldown, so it can be off by one.")
+    end
+
     Settings.CreateColorSwatch(category, Register("color", Settings.VarType.String, "Colour"))
 
     if defaults.lastColor then

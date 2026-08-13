@@ -19,6 +19,7 @@ ns.defaults = {
     },
     barrage = {
         enabled = true,
+        showCount = true,
         color = "ffbf73f2",
         lastColor = "ffff3333",
         size = 26,
