@@ -1,4 +1,6 @@
-if select(3, UnitClass("player")) ~= Constants.UICharacterClasses.Mage then
+local _, ns = ...
+
+if not ns.active then
     return
 end
 
@@ -14,6 +16,12 @@ local template = "Soul in %.1fs"
 
 local hasSavorTheMoment = false
 local sphereCount = 0
+
+-- Events can in principle arrive before ADDON_LOADED has populated the DB, so every read goes
+-- through here rather than indexing ns.db directly.
+local function IsEnabled(key)
+    return ns.db and ns.db[key].enabled
+end
 
 -- Savor the Moment extends Arcane Surge by 0.8s per Spellfire Sphere held when it goes off,
 -- so 3 spheres gives the familiar 17.4s. Called at cast time rather than cached, so a talent
@@ -157,14 +165,11 @@ end)
 
 local frame = CreateFrame("Frame", nil, UIParent)
 frame:SetSize(1, 1)
-frame:SetPoint("CENTER", UIParent, "CENTER", 0, -70)
 frame.timer = nil
 frame.ticker = nil
 frame.text = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 frame.text:SetPoint("CENTER", frame)
 local fontPath = frame.text:GetFont()
-frame.text:SetFont(fontPath, 26, "OUTLINE")
-frame.text:SetTextColor(0.75, 0.45, 0.95)
 frame:Hide()
 
 function frame:Stop()
@@ -181,6 +186,45 @@ function frame:Stop()
     self:Hide()
 end
 
+local previewRemaining = 2.4
+
+local function ShowSoulPreview()
+    frame:Stop()
+
+    if not ns.db.soulTimer.enabled then
+        return
+    end
+
+    frame.text:SetText(template:format(previewRemaining))
+    frame:Show()
+end
+
+ns.OnPreview(function(enabled)
+    if enabled then
+        ShowSoulPreview()
+    elseif not frame.timer and not frame.ticker then
+        frame:Stop()
+    end
+end)
+
+ns.OnApply(function()
+    local settings = ns.db.soulTimer
+
+    frame:ClearAllPoints()
+    frame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
+    frame.text:SetFont(fontPath, settings.size, "OUTLINE")
+    frame.text:SetTextColor(ns.UnpackColor(settings.color))
+
+    -- Turning the module off mid-countdown has to tear down what's already running.
+    if not settings.enabled then
+        frame:Stop()
+    end
+
+    if ns.previewing then
+        ShowSoulPreview()
+    end
+end)
+
 frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 frame:RegisterEvent("PLAYER_DEAD")
 frame:SetScript("OnEvent", function(self, event, _, _, spellId)
@@ -190,6 +234,13 @@ frame:SetScript("OnEvent", function(self, event, _, _, spellId)
     end
 
     if spellId ~= arcaneSurgeId then
+        return
+    end
+
+    -- An actual cast outranks the preview, whichever modules happen to be enabled.
+    ns.SetPreview(false)
+
+    if not IsEnabled("soulTimer") then
         return
     end
 
@@ -223,19 +274,22 @@ end)
 local arcaneBarrageId = 44425
 local arcaneSoulDuration = 4
 local baseGcd = 1.5
+-- Just under the game's 0.75 hard floor, so a duplicated cast event can't be mistaken for an
+-- absurdly short GCD. The old lower bound of "greater than zero" would have accepted it.
+local minGcd = 0.7
+local gcdFloor = 0.75
+local gcdSpellId = 61304
 
 local soulFrame = CreateFrame("Frame", nil, UIParent)
 soulFrame:SetSize(1, 1)
-soulFrame:SetPoint("CENTER", UIParent, "CENTER", 0, -80)
 soulFrame.text = soulFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 soulFrame.text:SetPoint("CENTER", soulFrame)
-soulFrame.text:SetFont(fontPath, 26, "OUTLINE")
-soulFrame.text:SetTextColor(0.75, 0.45, 0.95)
 soulFrame:Hide()
 
 soulFrame.windowTimer = nil
 soulFrame.expirationTime = nil
 soulFrame.gcd = nil
+soulFrame.gcdIsClean = false
 soulFrame.lastCastTime = nil
 
 function soulFrame:Stop()
@@ -253,14 +307,139 @@ function soulFrame:Stop()
     self:Hide()
 end
 
-local normalColor = { 0.75, 0.45, 0.95 }
-local lastColor = { 1, 0.2, 0.2 }
+-- The counter alternates between a number and the red LAST, so the preview cycles through
+-- both rather than picking one -- otherwise half the colour settings can't be judged.
+local previewCount = 3
+local previewCycle = 1.5
+local previewTicker
+local previewShowsLast = false
+
+local function DrawBarragePreview()
+    if previewShowsLast then
+        soulFrame.text:SetText("LAST")
+        soulFrame.text:SetTextColor(ns.UnpackColor(ns.db.barrage.lastColor))
+    else
+        soulFrame.text:SetText(tostring(previewCount))
+        soulFrame.text:SetTextColor(ns.UnpackColor(ns.db.barrage.color))
+    end
+
+    soulFrame:Show()
+end
+
+local function StopBarragePreview()
+    if previewTicker then
+        previewTicker:Cancel()
+        previewTicker = nil
+    end
+
+    -- Never tear down a real window. A Surge cast switches the preview off, and this frame
+    -- may already have been armed for that same cast depending on which frame the event
+    -- reached first -- without this guard the counter would silently never appear.
+    if not soulFrame.expirationTime and not soulFrame.windowTimer then
+        soulFrame:Stop()
+    end
+end
+
+local function StartBarragePreview()
+    StopBarragePreview()
+
+    if not ns.db.barrage.enabled then
+        return
+    end
+
+    DrawBarragePreview()
+
+    previewTicker = C_Timer.NewTicker(previewCycle, function()
+        previewShowsLast = not previewShowsLast
+        DrawBarragePreview()
+    end)
+end
+
+ns.OnPreview(function(enabled)
+    if enabled then
+        StartBarragePreview()
+    else
+        StopBarragePreview()
+    end
+end)
+
+-- Colour is set per state in Recalc rather than here, since it alternates with the count.
+ns.OnApply(function()
+    local settings = ns.db.barrage
+
+    soulFrame:ClearAllPoints()
+    soulFrame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
+    soulFrame.text:SetFont(fontPath, settings.size, "OUTLINE")
+
+    if not settings.enabled then
+        soulFrame:Stop()
+    end
+
+    -- Redraw rather than restart, so a colour tweak lands immediately instead of waiting
+    -- out the rest of the current cycle.
+    if ns.previewing then
+        if previewTicker then
+            DrawBarragePreview()
+        else
+            StartBarragePreview()
+        end
+    end
+end)
+
+-- The gap between two casts is only a clean GCD reading if the GCD never lapsed between them.
+-- If it did, the gap contains idle time and overstates the GCD, which is what makes the
+-- counter say LAST while another Barrage still fits. A GCD that never drops is itself the
+-- proof that queueing held, so watching spell 61304 for a lapse sorts good samples from bad.
+--
+-- isActive is the field to use: startTime and duration are SecretWhenCooldownsRestricted, but
+-- isActive is flagged NeverSecret.
+local gcdWatcher = CreateFrame("Frame")
+gcdWatcher:Hide()
+
+gcdWatcher:SetScript("OnUpdate", function(self)
+    local info = C_Spell.GetSpellCooldown(gcdSpellId)
+
+    if info and info.isActive then
+        self.sawActive = true
+        return
+    end
+
+    -- The GCD takes a frame or two to register after the cast, so only a lapse seen after
+    -- it was actually running counts. Either way the verdict is in, so stop polling.
+    if self.sawActive or GetTime() - self.startedAt > baseGcd then
+        self.lapsed = true
+        self:Hide()
+    end
+end)
+
+local function WatchGcd()
+    gcdWatcher.startedAt = GetTime()
+    gcdWatcher.sawActive = false
+    gcdWatcher.lapsed = false
+    gcdWatcher:Show()
+end
+
+-- Haste is read live on every recalculation rather than cached, so Bloodlust, trinket procs
+-- and potions are all reflected on the very next press. Whether it's readable depends on the
+-- context, so a secret value falls back to the gap measured between casts -- less accurate,
+-- since that gap includes reaction time, but always available.
+local function CurrentGcd(measured)
+    local haste = UnitSpellHaste("player")
+
+    if not haste or (issecretvalue and issecretvalue(haste)) then
+        return measured
+    end
+
+    return math.max(gcdFloor, baseGcd / (1 + haste / 100))
+end
 
 -- updateDisplay is false for the idle ticker (only watches for window expiry) and true
 -- when a Barrage cast (or the window opening) should refresh the frozen prediction, so the
 -- number holding steady between presses actually means something instead of drifting.
 function soulFrame:Recalc(updateDisplay)
-    if not self.expirationTime or not self.gcd then
+    local gcd = CurrentGcd(self.gcd)
+
+    if not self.expirationTime or not gcd then
         return
     end
 
@@ -278,17 +457,20 @@ function soulFrame:Recalc(updateDisplay)
     -- Number of further presses that still fit after the one that just triggered this.
     -- 0 means none are coming at all, so there's nothing left to decide -> hide.
     -- 1 means the next press is the only (and therefore last) one coming.
-    local moreFits = math.floor(remaining / self.gcd)
+    --
+    -- ceil-minus-one rather than floor: a press landing exactly as the window closes doesn't
+    -- land, and floor would count it.
+    local moreFits = math.ceil(remaining / gcd) - 1
 
     if moreFits <= 0 then
         self:Hide()
         return
     elseif moreFits == 1 then
         self.text:SetText("LAST")
-        self.text:SetTextColor(unpack(lastColor))
+        self.text:SetTextColor(ns.UnpackColor(ns.db.barrage.lastColor))
     else
         self.text:SetText(tostring(moreFits))
-        self.text:SetTextColor(unpack(normalColor))
+        self.text:SetTextColor(ns.UnpackColor(ns.db.barrage.color))
     end
 
     self:Show()
@@ -299,6 +481,10 @@ soulFrame:RegisterEvent("PLAYER_DEAD")
 soulFrame:SetScript("OnEvent", function(self, event, _, _, spellId)
     if event == "PLAYER_DEAD" then
         self:Stop()
+        return
+    end
+
+    if not IsEnabled("barrage") then
         return
     end
 
@@ -319,20 +505,22 @@ soulFrame:SetScript("OnEvent", function(self, event, _, _, spellId)
         return
     end
 
-    -- Cooldown APIs return tainted "secret" values now, so the GCD is measured from the
-    -- gap between queued casts instead. Spell queueing means back-to-back presses land
-    -- right on the GCD edge, so this gap is the real haste-adjusted GCD.
     local now = GetTime()
 
     if self.lastCastTime then
         local delta = now - self.lastCastTime
+        local clean = not gcdWatcher.lapsed
 
-        if delta > 0 and delta <= baseGcd then
+        -- A dirty sample is only taken when there's nothing better yet, so the counter still
+        -- has something to work with before the first cleanly queued press of the session.
+        if delta >= minGcd and delta <= baseGcd and (clean or not self.gcdIsClean) then
             self.gcd = delta
+            self.gcdIsClean = clean
         end
     end
 
     self.lastCastTime = now
+    WatchGcd()
 
     if self.expirationTime then
         self:Recalc(true)

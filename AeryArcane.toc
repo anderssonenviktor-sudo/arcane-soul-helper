@@ -2,6 +2,9 @@
 ## Title: AeryArcane
 ## DefaultState: Enabled
 ## Author: Aerylea-TarrenMill-EU
-## Version: 1.0.0
+## Version: 1.1.0
+## SavedVariables: AeryArcaneDB
 
+Config.lua
 Init.lua
+Options.lua
