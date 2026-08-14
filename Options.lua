@@ -79,12 +79,6 @@ SLASH_AERYARCANE1 = "/aeryarcane"
 SLASH_AERYARCANE2 = "/aa"
 SLASH_AERYARCANE3 = "/soul"
 SlashCmdList["AERYARCANE"] = function(msg)
-    if msg == "gcd" then
-        print(("|cffbb88ffAeryArcane|r: gcd readout %s"):format(
-            ns.ToggleGcdReadout() and "on" or "off"))
-        return
-    end
-
     if msg == "log" then
         ns.logging = not ns.logging
         print(("|cffbb88ffAeryArcane|r: soul log %s"):format(ns.logging and "on" or "off"))

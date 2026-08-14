@@ -10,6 +10,11 @@ local spellfireSphereId = 448604
 local baseSurgeDuration = 15
 local sphereDurationBonus = 0.8
 local maxSpheres = 3
+-- Each damaging cast has a 12% chance to generate a sphere. In combat the aura is secret and
+-- the combat log is closed to addons, so this is carried as an expectation rather than a
+-- count: 0.12 per cast is never exactly right, but it is never far wrong either. Incrementing
+-- by whole spheres every ~8 casts would be confidently wrong a third of the time instead.
+local sphereChance = 0.12
 local threshold = 3
 local updateInterval = 0.1
 local template = "Soul in %.1fs"
@@ -20,6 +25,7 @@ local sunfuryTreeId = 39
 
 local hasSavorTheMoment = false
 local sphereCount = 0
+local castsSinceSync = 0
 local isSupported = false
 
 -- Spec and hero talents both change mid-session, so this is re-evaluated on the same events
@@ -52,7 +58,11 @@ local function SurgeDuration()
         return baseSurgeDuration
     end
 
-    return baseSurgeDuration + sphereDurationBonus * sphereCount
+    -- Rounded to a whole sphere, so the result is always one the game can actually produce:
+    -- 15.0, 15.8, 16.6 or 17.4. Using the fractional estimate directly would land between
+    -- them and be guaranteed wrong every time, where rounding is exactly right most of the
+    -- time and a full sphere out occasionally.
+    return baseSurgeDuration + sphereDurationBonus * math.floor(sphereCount + 0.5)
 end
 
 -- Returns true/false, or nil when the trait config isn't readable yet (early login, mid
@@ -157,34 +167,30 @@ local function RefreshFromAura()
 
     if count then
         sphereCount = count
+        castsSinceSync = 0
     end
 end
 
-local sphereFrame = CreateFrame("Frame")
-sphereFrame:RegisterUnitEvent("UNIT_AURA", "player")
-sphereFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-sphereFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-sphereFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-sphereFrame:SetScript("OnEvent", function(_, event, _, _, spellId)
-    if event == "UNIT_SPELLCAST_SUCCEEDED" then
-        -- Surge's cooldown is far longer than the spheres take to come back, so every cast
-        -- after the opener is at full regardless of how early the pull was. Deferred a frame
-        -- so both display frames handling this same cast still see the pre-Surge count.
-        if spellId == arcaneSurgeId then
-            C_Timer.After(0, function() sphereCount = maxSpheres end)
-        end
+-- Blind once combat starts, so accumulate what the casts are worth. Without this the last
+-- out-of-combat reading stands for the whole fight, which is why a pack pulled before the
+-- spheres refilled reported Soul arriving early -- the reading was stale-low, and stale-low
+-- is the only direction it can be wrong in.
+local function AccumulateSphere()
+    local before = math.floor(sphereCount + 0.5)
 
-        return
+    sphereCount = math.min(maxSpheres, sphereCount + sphereChance)
+    castsSinceSync = castsSinceSync + 1
+
+    local after = math.floor(sphereCount + 0.5)
+
+    -- Logged on the rounded value rather than every cast, since that's the number the duration
+    -- actually uses. Compare against the stack count on your own buff bar, which the client
+    -- still renders even though the value is secret to us.
+    if ns.logging and after ~= before then
+        print(("|cff88ccffsphere|r predict %d -> %d  after %d casts (estimate %.2f)")
+            :format(before, after, castsSinceSync, sphereCount))
     end
-
-    if event == "PLAYER_REGEN_ENABLED" then
-        -- Lockdown can still read true during the event itself, so let it lift first.
-        C_Timer.After(0, RefreshFromAura)
-        return
-    end
-
-    RefreshFromAura()
-end)
+end
 
 local frame = CreateFrame("Frame", nil, UIParent)
 frame:SetSize(1, 1)
@@ -248,21 +254,7 @@ ns.OnApply(function()
     end
 end)
 
-frame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-frame:RegisterEvent("PLAYER_DEAD")
-frame:SetScript("OnEvent", function(self, event, _, _, spellId)
-    if event == "PLAYER_DEAD" then
-        self:Stop()
-        return
-    end
-
-    if spellId ~= arcaneSurgeId then
-        return
-    end
-
-    -- An actual cast outranks the preview, whichever modules happen to be enabled.
-    ns.SetPreview(false)
-
+function frame:Begin()
     if not IsEnabled("soulTimer") then
         return
     end
@@ -292,7 +284,7 @@ frame:SetScript("OnEvent", function(self, event, _, _, spellId)
         self.ticker = C_Timer.NewTicker(updateInterval, Update,
             math.ceil(threshold / updateInterval) + 2)
     end)
-end)
+end
 
 local arcaneBarrageId = 44425
 local arcaneSoulDuration = 4
@@ -515,76 +507,75 @@ function soulFrame:Recalc(updateDisplay, justCast)
     self:Show()
 end
 
--- Live readout of the client's own GCD value.
-local gcdDebug = CreateFrame("Frame", nil, UIParent)
-gcdDebug:SetSize(1, 1)
-gcdDebug:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
-gcdDebug.text = gcdDebug:CreateFontString(nil, "OVERLAY", "GameTooltipText")
-gcdDebug.text:SetPoint("CENTER", gcdDebug)
-gcdDebug.text:SetFont(fontPath, 14, "OUTLINE")
-gcdDebug.text:SetTextColor(0.55, 0.9, 0.55)
-gcdDebug:Hide()
-
-function ns.ToggleGcdReadout()
-    gcdDebug:SetShown(not gcdDebug:IsShown())
-    return gcdDebug:IsShown()
-end
-
--- Driven every frame off the client's own value, so it holds steady and only moves when haste
--- actually does. UNAVAILABLE would mean a cooldown is running that we're not allowed to read --
--- the contextual case that hasn't turned up yet, and the one that would need a fallback.
-gcdDebug:SetScript("OnUpdate", function(self)
-    local gcd, endsAt = ReadGcd()
-
-    -- An end time only comes back from a live read, so it -- not the length, which is cached --
-    -- is what says whether the client is still answering. A running cooldown we can't read is
-    -- the contextual secrecy case; no cooldown at all is just idle.
-    if endsAt then
-        self.available = true
-    else
-        local info = C_Spell.GetSpellCooldown(gcdSpellId)
-
-        if info and info.isActive then
-            self.available = false
-        end
-    end
-
-    self.text:SetText(("gcd %s %s   %s"):format(
-        gcd and ("%.3f"):format(gcd) or "--",
-        self.available and "exact" or "|cffff6666UNAVAILABLE|r",
-        endsAt and ("ends in %.2f"):format(endsAt - GetTime()) or "idle"))
-end)
-
-soulFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-soulFrame:RegisterEvent("PLAYER_DEAD")
-soulFrame:SetScript("OnEvent", function(self, event, _, _, spellId)
-    if event == "PLAYER_DEAD" then
-        self:Stop()
-        return
-    end
-
+function soulFrame:Begin()
     if not IsEnabled("barrage") then
         return
     end
 
+    self:Stop()
+
+    self.windowTimer = C_Timer.NewTimer(SurgeDuration(), function()
+        self.windowTimer = nil
+        self.expirationTime = GetTime() + arcaneSoulDuration
+        self:Recalc(true)
+        self.ticker = C_Timer.NewTicker(updateInterval, function() self:Recalc(false) end)
+    end)
+end
+
+-- One handler for everything. Three frames used to register the same events and each re-check
+-- the same spell ids, which meant the order of operations depended on which frame happened to
+-- register first -- a silent dependency that broke the counter once already.
+local events = CreateFrame("Frame")
+events:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+events:RegisterUnitEvent("UNIT_AURA", "player")
+events:RegisterEvent("PLAYER_ENTERING_WORLD")
+events:RegisterEvent("PLAYER_REGEN_ENABLED")
+events:RegisterEvent("PLAYER_DEAD")
+events:SetScript("OnEvent", function(_, event, _, _, spellId)
+    if event == "PLAYER_DEAD" then
+        frame:Stop()
+        soulFrame:Stop()
+        return
+    end
+
+    if event == "PLAYER_REGEN_ENABLED" then
+        -- Lockdown can still read true during the event itself, so let it lift first.
+        C_Timer.After(0, RefreshFromAura)
+        return
+    end
+
+    if event ~= "UNIT_SPELLCAST_SUCCEEDED" then
+        RefreshFromAura()
+        return
+    end
+
     if spellId == arcaneSurgeId then
-        self:Stop()
+        -- An actual cast outranks the preview, whichever modules happen to be enabled.
+        ns.SetPreview(false)
 
-        self.windowTimer = C_Timer.NewTimer(SurgeDuration(), function()
-            self.windowTimer = nil
-            self.expirationTime = GetTime() + arcaneSoulDuration
-            self:Recalc(true)
-            self.ticker = C_Timer.NewTicker(updateInterval, function() self:Recalc(false) end)
-        end)
+        if ns.logging then
+            print(("|cff88ccffsurge|r spheres %.2f -> %d  talent %s  ->  soul in %.1fs"):format(
+                sphereCount, math.floor(sphereCount + 0.5), tostring(hasSavorTheMoment),
+                SurgeDuration()))
+        end
+
+        -- Both displays derive this Surge's duration from the pre-Surge sphere count, so they
+        -- start before it is cleared. Ordering these explicitly is what lets the reset happen
+        -- inline -- it used to need deferring by a frame to win a race between three handlers.
+        frame:Begin()
+        soulFrame:Begin()
+
+        sphereCount = 0
+        castsSinceSync = 0
 
         return
     end
 
-    if spellId ~= arcaneBarrageId then
-        return
+    if InCombatLockdown() then
+        AccumulateSphere()
     end
 
-    if self.expirationTime then
-        self:Recalc(true, true)
+    if spellId == arcaneBarrageId and soulFrame.expirationTime then
+        soulFrame:Recalc(true, true)
     end
 end)
