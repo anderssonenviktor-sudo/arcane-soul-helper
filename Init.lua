@@ -296,9 +296,8 @@ end)
 
 local arcaneBarrageId = 44425
 local arcaneSoulDuration = 4
+-- Sanity bounds on the reported GCD: the game floors it at 0.75 and it can't exceed 1.5.
 local baseGcd = 1.5
--- Just under the game's 0.75 hard floor, so a duplicated cast event can't be mistaken for an
--- absurdly short GCD. The old lower bound of "greater than zero" would have accepted it.
 local minGcd = 0.7
 local gcdSpellId = 61304
 
@@ -310,8 +309,6 @@ soulFrame:Hide()
 
 soulFrame.windowTimer = nil
 soulFrame.expirationTime = nil
-soulFrame.gcd = nil
-soulFrame.lastCastTime = nil
 
 function soulFrame:Stop()
     if self.windowTimer then
@@ -409,67 +406,59 @@ ns.OnApply(function()
     end
 end)
 
--- The gap between two casts is only a clean GCD reading if the GCD never lapsed between them.
--- If it did, the gap contains idle time and overstates the GCD, which is what makes the
--- counter say LAST while another Barrage still fits. A GCD that never drops is itself the
--- proof that queueing held, so watching spell 61304 for a lapse sorts good samples from bad.
+-- The GCD is client-predicted: the client starts it on your keypress without waiting for the
+-- server, so its length and end time are local values with no network jitter in them at all.
+-- Everything here used to be inferred from the gaps between cast events, which could only ever
+-- be as steady as packet arrival -- about 35ms of scatter either side of the truth.
 --
--- isActive is the field to use: startTime and duration are SecretWhenCooldownsRestricted, but
--- isActive is flagged NeverSecret.
-local gcdWatcher = CreateFrame("Frame")
-gcdWatcher:Hide()
+-- Returns the GCD's length and the moment it ends, or nothing while none is running. Knowing
+-- the end matters as much as the length: a window opening part-way through some other cast's
+-- cooldown is waiting out the remainder, not a whole one.
+local lastKnownGcd
 
-gcdWatcher:SetScript("OnUpdate", function(self)
+local function ReadGcd()
     local info = C_Spell.GetSpellCooldown(gcdSpellId)
 
+    -- duration is only meaningful while the cooldown is running; idle it reports zero.
     if info and info.isActive then
-        self.sawActive = true
-        return
+        local duration, startTime = info.duration, info.startTime
+
+        -- Cooldown secrecy is contextual, so guard on the values rather than trusting a flag.
+        local readable = duration and startTime
+            and not (issecretvalue and (issecretvalue(duration) or issecretvalue(startTime)))
+
+        if readable and duration >= minGcd and duration <= baseGcd then
+            lastKnownGcd = duration
+            return duration, startTime + duration
+        end
     end
 
-    -- The GCD takes a frame or two to register after the cast, so a lapse only counts once
-    -- it was actually seen running. Either way the verdict is in, so stop polling.
-    if self.sawActive then
-        self.lapsedAt = GetTime()
-        self:Hide()
-    elseif GetTime() - self.startedAt > baseGcd then
-        self:Hide()
-    end
-end)
-
-local function WatchGcd()
-    gcdWatcher.startedAt = GetTime()
-    gcdWatcher.sawActive = false
-    gcdWatcher.lapsedAt = nil
-    gcdWatcher:Show()
-end
-
-local function IsOnGcd()
-    local info = C_Spell.GetSpellCooldown(gcdSpellId)
-
-    -- isActive is NeverSecret, so this stays readable in combat.
-    return info and info.isActive
+    -- Nothing running to report an end time for, but the length still stands: it only moves
+    -- when haste does. Without this the counter would go blank the moment a queue is missed,
+    -- which is exactly when it needs to keep recounting.
+    return lastKnownGcd
 end
 
 -- updateDisplay is false for the idle ticker and true when a Barrage cast or the window
 -- opening should refresh the prediction. justCast marks the Barrage path specifically: the
--- GCD takes a frame or two to register, so the API can still claim we're off it right after
--- a press.
+-- GCD takes a frame or two to register, so the client can still report us off it right
+-- after a press.
 function soulFrame:Recalc(updateDisplay, justCast)
-    local gcd = self.gcd
+    local gcd, gcdEndsAt = ReadGcd()
 
     if not self.expirationTime or not gcd then
         return
     end
 
-    local remaining = self.expirationTime - GetTime()
+    local now = GetTime()
+    local remaining = self.expirationTime - now
 
     if remaining <= 0 then
         self:Stop()
         return
     end
 
-    local onGcd = justCast or IsOnGcd()
+    local onGcd = gcdEndsAt ~= nil or justCast
 
     -- Frozen while on the GCD, because the earliest next press is pinned to the end of the
     -- current one and the answer can't change. Once it lapses the earliest press is "now",
@@ -478,20 +467,40 @@ function soulFrame:Recalc(updateDisplay, justCast)
         return
     end
 
-    -- Presses that still fit. On the GCD they land at g, 2g, ... so the one we're currently
-    -- serving doesn't count; idle, the next press can go immediately and does count.
-    --
-    -- ceil-minus-one rather than floor: a press landing exactly as the window closes doesn't
-    -- land, and floor would count it.
-    local moreFits = math.ceil(remaining / gcd) - (onGcd and 1 or 0)
+    -- Everything hinges on when the next press can actually go off. The client's end time is
+    -- exact, remainder and all, which matters most when the window opens part-way through some
+    -- unrelated cast's cooldown. The other two branches only cover the frame or two after a
+    -- press before the GCD registers, and standing idle with nothing running.
+    local nextPress
+
+    if gcdEndsAt then
+        nextPress = gcdEndsAt
+    elseif onGcd then
+        nextPress = now + gcd
+    else
+        nextPress = now
+    end
+
+    -- Presses land at nextPress, +gcd, +2gcd ... and one arriving exactly as the window
+    -- closes doesn't land, which is why this is ceil rather than floor.
+    local moreFits = math.ceil((self.expirationTime - nextPress) / gcd)
+
+    if ns.logging then
+        print(("|cff88ccffsoul|r gcd %.3f  end %s  rem %.3f  next +%.3f  fits %d"):format(
+            gcd,
+            gcdEndsAt and ("+%.3f"):format(gcdEndsAt - now) or "idle",
+            remaining,
+            nextPress - now,
+            moreFits))
+    end
 
     if moreFits <= 0 then
         self:Hide()
         return
     end
 
-    -- The final warning is always shown. Only the running count is optional, since it leans
-    -- on a predicted GCD and can land a press either side of the truth.
+    -- The final warning is always shown. Only the running count is optional: it needs the
+    -- window's start predicted accurately, whereas "exactly one left" tolerates far more slop.
     if moreFits == 1 then
         self.text:SetText("LAST")
         self.text:SetTextColor(ns.UnpackColor(ns.db.barrage.lastColor))
@@ -505,6 +514,46 @@ function soulFrame:Recalc(updateDisplay, justCast)
 
     self:Show()
 end
+
+-- Live readout of the client's own GCD value.
+local gcdDebug = CreateFrame("Frame", nil, UIParent)
+gcdDebug:SetSize(1, 1)
+gcdDebug:SetPoint("CENTER", UIParent, "CENTER", 0, -120)
+gcdDebug.text = gcdDebug:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+gcdDebug.text:SetPoint("CENTER", gcdDebug)
+gcdDebug.text:SetFont(fontPath, 14, "OUTLINE")
+gcdDebug.text:SetTextColor(0.55, 0.9, 0.55)
+gcdDebug:Hide()
+
+function ns.ToggleGcdReadout()
+    gcdDebug:SetShown(not gcdDebug:IsShown())
+    return gcdDebug:IsShown()
+end
+
+-- Driven every frame off the client's own value, so it holds steady and only moves when haste
+-- actually does. UNAVAILABLE would mean a cooldown is running that we're not allowed to read --
+-- the contextual case that hasn't turned up yet, and the one that would need a fallback.
+gcdDebug:SetScript("OnUpdate", function(self)
+    local gcd, endsAt = ReadGcd()
+
+    -- An end time only comes back from a live read, so it -- not the length, which is cached --
+    -- is what says whether the client is still answering. A running cooldown we can't read is
+    -- the contextual secrecy case; no cooldown at all is just idle.
+    if endsAt then
+        self.available = true
+    else
+        local info = C_Spell.GetSpellCooldown(gcdSpellId)
+
+        if info and info.isActive then
+            self.available = false
+        end
+    end
+
+    self.text:SetText(("gcd %s %s   %s"):format(
+        gcd and ("%.3f"):format(gcd) or "--",
+        self.available and "exact" or "|cffff6666UNAVAILABLE|r",
+        endsAt and ("ends in %.2f"):format(endsAt - GetTime()) or "idle"))
+end)
 
 soulFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 soulFrame:RegisterEvent("PLAYER_DEAD")
@@ -534,27 +583,6 @@ soulFrame:SetScript("OnEvent", function(self, event, _, _, spellId)
     if spellId ~= arcaneBarrageId then
         return
     end
-
-    local now = GetTime()
-
-    if self.lastCastTime then
-        -- Both ways of spotting the end of the last GCD, whichever came first:
-        --
-        --   queued   -- no lapse, so the GCD ended exactly as this cast fired
-        --   fumbled  -- the GCD lapsed first, and the watcher timestamped that moment
-        --
-        -- Either endpoint minus the previous cast is the GCD itself, so a missed queue still
-        -- yields a real measurement instead of a gap padded with idle time.
-        local gcdEnd = gcdWatcher.lapsedAt or now
-        local delta = gcdEnd - self.lastCastTime
-
-        if delta >= minGcd and delta <= baseGcd then
-            self.gcd = delta
-        end
-    end
-
-    self.lastCastTime = now
-    WatchGcd()
 
     if self.expirationTime then
         self:Recalc(true, true)

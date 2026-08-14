@@ -36,8 +36,8 @@ local function AddModule(category, layout, key, title)
     if defaults.showCount ~= nil then
         Settings.CreateCheckbox(category,
             Register("showCount", Settings.VarType.Boolean, "Show remaining count"),
-            "Turn off to show only the final cast warning. The count of remaining casts is"
-                .. " predicted from your last global cooldown, so it can be off by one.")
+            "Turn off to show only the final cast warning. The count depends on predicting"
+                .. " exactly when Arcane Soul begins, so it can occasionally be off by one.")
     end
 
     Settings.CreateColorSwatch(category, Register("color", Settings.VarType.String, "Colour"))
@@ -78,7 +78,19 @@ end
 SLASH_AERYARCANE1 = "/aeryarcane"
 SLASH_AERYARCANE2 = "/aa"
 SLASH_AERYARCANE3 = "/soul"
-SlashCmdList["AERYARCANE"] = function()
+SlashCmdList["AERYARCANE"] = function(msg)
+    if msg == "gcd" then
+        print(("|cffbb88ffAeryArcane|r: gcd readout %s"):format(
+            ns.ToggleGcdReadout() and "on" or "off"))
+        return
+    end
+
+    if msg == "log" then
+        ns.logging = not ns.logging
+        print(("|cffbb88ffAeryArcane|r: soul log %s"):format(ns.logging and "on" or "off"))
+        return
+    end
+
     if ns.optionsCategory then
         Settings.OpenToCategory(ns.optionsCategory:GetID())
     end
