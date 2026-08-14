@@ -25,8 +25,11 @@ local function Register(category, key, variableKey, variableType, name)
     return setting
 end
 
-local function AddModule(category, layout, key, title)
+-- labels overrides the default wording per module, since an icon-based one means something
+-- different by "size" and "colour" than a text-based one does.
+local function AddModule(category, layout, key, title, labels)
     local defaults = ns.defaults[key]
+    labels = labels or {}
 
     local function Add(variableKey, variableType, name)
         return Register(category, key, variableKey, variableType, name)
@@ -43,14 +46,20 @@ local function AddModule(category, layout, key, title)
                 .. " exactly when Arcane Soul begins, so it can occasionally be off by one.")
     end
 
-    Settings.CreateColorSwatch(category, Add("color", Settings.VarType.String, "Colour"))
+    Settings.CreateColorSwatch(category,
+        Add("color", Settings.VarType.String, labels.color or "Colour"))
 
     if defaults.lastColor then
         Settings.CreateColorSwatch(category,
             Add("lastColor", Settings.VarType.String, "Colour on last cast"))
     end
 
-    Slider(category, Add("size", Settings.VarType.Number, "Font size"), sizeRange)
+    Slider(category, Add("size", Settings.VarType.Number, labels.size or "Font size"), sizeRange)
+
+    if defaults.fontSize then
+        Slider(category, Add("fontSize", Settings.VarType.Number, "Font size"), sizeRange)
+    end
+
     Slider(category, Add("x", Settings.VarType.Number, "Horizontal offset"), offsetRange)
     Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRange)
 end
@@ -78,6 +87,10 @@ function ns.BuildOptions()
 
     AddModule(category, layout, "soulTimer", "Arcane Soul Timer")
     AddModule(category, layout, "barrage", "Barrage Counter")
+    AddModule(category, layout, "spheres", "Sphere Warning", {
+        size = "Icon size",
+        color = "Text colour",
+    })
     AddTiming(category, layout)
 
     Settings.RegisterAddOnCategory(category)

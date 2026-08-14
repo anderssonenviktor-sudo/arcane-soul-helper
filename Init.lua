@@ -531,6 +531,90 @@ function soulFrame:Begin()
     end)
 end
 
+-- Out of combat the sphere count is a real reading rather than an estimate, so this can warn
+-- that a pull now would shorten the next Surge. Deliberately silent at maximum: "you are ready"
+-- is the normal state and doesn't need saying.
+-- Drawn as the buff itself -- icon plus stack count in the corner -- so it reads as "the thing
+-- you are missing" rather than as another number to learn.
+local previewSpheres = 1
+
+local sphereDisplay = CreateFrame("Frame", nil, UIParent)
+sphereDisplay:Hide()
+
+sphereDisplay.icon = sphereDisplay:CreateTexture(nil, "ARTWORK")
+sphereDisplay.icon:SetAllPoints(sphereDisplay)
+-- Spell icons ship with a border baked into the outer few percent. Cropping it is what the
+-- buff frame does; without it the art sits inset and looks muddy against the rest of the UI.
+sphereDisplay.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+
+sphereDisplay.count = sphereDisplay:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+sphereDisplay.count:SetPoint("BOTTOMRIGHT", sphereDisplay, "BOTTOMRIGHT", 2, -1)
+
+-- Texture is fetched here rather than once at load: spell data isn't reliably available by
+-- ADDON_LOADED, and this only runs on an aura change, not per frame.
+local function DrawSpheres(count)
+    sphereDisplay.icon:SetTexture(C_Spell.GetSpellTexture(spellfireSphereId))
+    -- Greyed at zero, where there is no buff to mirror and the absence is the whole point.
+    sphereDisplay.icon:SetDesaturated(count == 0)
+    sphereDisplay.count:SetText(count)
+    sphereDisplay:Show()
+end
+
+function sphereDisplay:Refresh()
+    -- In combat the count is secret and whatever we hold is an estimate, so there's nothing
+    -- honest to show -- and by then it's too late to act on anyway.
+    if not IsEnabled("spheres") or InCombatLockdown() then
+        self:Hide()
+        return
+    end
+
+    local count = math.floor(sphereCount + 0.5)
+
+    if count >= maxSpheres then
+        self:Hide()
+        return
+    end
+
+    DrawSpheres(count)
+end
+
+local function ShowSpherePreview()
+    if not ns.db.spheres.enabled then
+        sphereDisplay:Hide()
+        return
+    end
+
+    DrawSpheres(previewSpheres)
+end
+
+ns.OnPreview(function(enabled)
+    if enabled then
+        ShowSpherePreview()
+    else
+        sphereDisplay:Refresh()
+    end
+end)
+
+ns.OnApply(function()
+    local settings = ns.db.spheres
+
+    -- Icon and text are sized independently here: size is the icon edge, fontSize the count
+    -- sitting on top of it.
+    sphereDisplay:SetSize(settings.size, settings.size)
+    sphereDisplay:ClearAllPoints()
+    sphereDisplay:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
+    -- Heavier outline than the text displays use: this one sits on top of icon art rather than
+    -- on the background, so a thin edge disappears against the brighter parts.
+    sphereDisplay.count:SetFont(fontPath, settings.fontSize, "THICKOUTLINE")
+    sphereDisplay.count:SetTextColor(ns.UnpackColor(settings.color))
+
+    if ns.previewing then
+        ShowSpherePreview()
+    else
+        sphereDisplay:Refresh()
+    end
+end)
+
 -- One handler for everything. Three frames used to register the same events and each re-check
 -- the same spell ids, which meant the order of operations depended on which frame happened to
 -- register first -- a silent dependency that broke the counter once already.
@@ -539,6 +623,7 @@ events:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 events:RegisterUnitEvent("UNIT_AURA", "player")
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
 events:RegisterEvent("PLAYER_REGEN_ENABLED")
+events:RegisterEvent("PLAYER_REGEN_DISABLED")
 events:RegisterEvent("PLAYER_DEAD")
 events:SetScript("OnEvent", function(_, event, _, _, spellId)
     if event == "PLAYER_DEAD" then
@@ -549,12 +634,23 @@ events:SetScript("OnEvent", function(_, event, _, _, spellId)
 
     if event == "PLAYER_REGEN_ENABLED" then
         -- Lockdown can still read true during the event itself, so let it lift first.
-        C_Timer.After(0, RefreshFromAura)
+        C_Timer.After(0, function()
+            RefreshFromAura()
+            sphereDisplay:Refresh()
+        end)
+
+        return
+    end
+
+    if event == "PLAYER_REGEN_DISABLED" then
+        -- Nothing to read from here on, so take the warning down rather than leave a stale one.
+        sphereDisplay:Refresh()
         return
     end
 
     if event ~= "UNIT_SPELLCAST_SUCCEEDED" then
         RefreshFromAura()
+        sphereDisplay:Refresh()
         return
     end
 

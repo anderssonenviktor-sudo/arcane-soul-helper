@@ -17,6 +17,17 @@ ns.defaults = {
         x = 0,
         y = -70,
     },
+    -- White count on an untinted icon, so it reads as a copy of the buff rather than as another
+    -- of the addon's own displays.
+    spheres = {
+        enabled = true,
+        color = "ffffffff",
+        -- Icon edge rather than a font height, so this wants to be larger than the text modules.
+        size = 32,
+        fontSize = 18,
+        x = 0,
+        y = -60,
+    },
     -- Not a display module, so it has no section of the shared enabled/colour/size shape.
     timing = {
         assumeMaxSpheres = false,
