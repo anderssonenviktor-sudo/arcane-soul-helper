@@ -3,7 +3,7 @@
 ## Notes: Arcane Soul countdown and remaining Arcane Barrage casts, for Sunfury Arcane mages.
 ## DefaultState: Enabled
 ## Author: Aerylea-TarrenMill-EU
-## Version: 1.1.0
+## Version: 1.2.0
 ## SavedVariables: AeryArcaneDB
 
 Config.lua

@@ -62,7 +62,16 @@ local function SurgeDuration()
     -- 15.0, 15.8, 16.6 or 17.4. Using the fractional estimate directly would land between
     -- them and be guaranteed wrong every time, where rounding is exactly right most of the
     -- time and a full sphere out occasionally.
-    return baseSurgeDuration + sphereDurationBonus * math.floor(sphereCount + 0.5)
+    --
+    -- Assuming the maximum trades that for predictability: never surprising mid-fight, but
+    -- always wrong when you pull before the spheres have come back.
+    local spheres = math.floor(sphereCount + 0.5)
+
+    if ns.db and ns.db.timing.assumeMaxSpheres then
+        spheres = maxSpheres
+    end
+
+    return baseSurgeDuration + sphereDurationBonus * spheres
 end
 
 -- Returns true/false, or nil when the trait config isn't readable yet (early login, mid

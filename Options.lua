@@ -15,41 +15,55 @@ end
 
 -- Settings writes straight into the table it's given, so pointing it at the DB subtable means
 -- saving is handled for us; the callback only has to push the change onto the live frames.
+local function Register(category, key, variableKey, variableType, name)
+    local setting = Settings.RegisterAddOnSetting(category,
+        ("AERYARCANE_%s_%s"):format(key:upper(), variableKey:upper()),
+        variableKey, ns.db[key], variableType, name, ns.defaults[key][variableKey])
+
+    setting:SetValueChangedCallback(ns.Apply)
+
+    return setting
+end
+
 local function AddModule(category, layout, key, title)
-    local db = ns.db[key]
     local defaults = ns.defaults[key]
 
-    local function Register(variableKey, variableType, name)
-        local setting = Settings.RegisterAddOnSetting(category,
-            ("AERYARCANE_%s_%s"):format(key:upper(), variableKey:upper()),
-            variableKey, db, variableType, name, defaults[variableKey])
-
-        setting:SetValueChangedCallback(ns.Apply)
-
-        return setting
+    local function Add(variableKey, variableType, name)
+        return Register(category, key, variableKey, variableType, name)
     end
 
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer(title))
 
-    Settings.CreateCheckbox(category, Register("enabled", Settings.VarType.Boolean, "Enabled"))
+    Settings.CreateCheckbox(category, Add("enabled", Settings.VarType.Boolean, "Enabled"))
 
     if defaults.showCount ~= nil then
         Settings.CreateCheckbox(category,
-            Register("showCount", Settings.VarType.Boolean, "Show remaining count"),
+            Add("showCount", Settings.VarType.Boolean, "Show remaining count"),
             "Turn off to show only the final cast warning. The count depends on predicting"
                 .. " exactly when Arcane Soul begins, so it can occasionally be off by one.")
     end
 
-    Settings.CreateColorSwatch(category, Register("color", Settings.VarType.String, "Colour"))
+    Settings.CreateColorSwatch(category, Add("color", Settings.VarType.String, "Colour"))
 
     if defaults.lastColor then
         Settings.CreateColorSwatch(category,
-            Register("lastColor", Settings.VarType.String, "Colour on last cast"))
+            Add("lastColor", Settings.VarType.String, "Colour on last cast"))
     end
 
-    Slider(category, Register("size", Settings.VarType.Number, "Font size"), sizeRange)
-    Slider(category, Register("x", Settings.VarType.Number, "Horizontal offset"), offsetRange)
-    Slider(category, Register("y", Settings.VarType.Number, "Vertical offset"), offsetRange)
+    Slider(category, Add("size", Settings.VarType.Number, "Font size"), sizeRange)
+    Slider(category, Add("x", Settings.VarType.Number, "Horizontal offset"), offsetRange)
+    Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRange)
+end
+
+local function AddTiming(category, layout)
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Surge Duration"))
+
+    Settings.CreateCheckbox(category,
+        Register(category, "timing", "assumeMaxSpheres", Settings.VarType.Boolean,
+            "Always assume maximum spheres"),
+        "Arcane Surge lasts 0.8s longer per Spellfire Sphere. The count can't be read in"
+            .. " combat, so it is estimated from how much you have cast. Turn this on to always"
+            .. " assume three instead: steadier, but wrong when you pull before they regenerate.")
 end
 
 -- Preview runs whenever our page is the one on screen, so both frames can be positioned and
@@ -64,6 +78,7 @@ function ns.BuildOptions()
 
     AddModule(category, layout, "soulTimer", "Arcane Soul Timer")
     AddModule(category, layout, "barrage", "Barrage Counter")
+    AddTiming(category, layout)
 
     Settings.RegisterAddOnCategory(category)
 

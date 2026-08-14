@@ -17,6 +17,10 @@ ns.defaults = {
         x = 0,
         y = -70,
     },
+    -- Not a display module, so it has no section of the shared enabled/colour/size shape.
+    timing = {
+        assumeMaxSpheres = false,
+    },
     barrage = {
         enabled = true,
         showCount = true,
