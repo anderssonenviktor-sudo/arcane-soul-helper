@@ -1,10 +1,11 @@
 ## Interface: 120007, 120100
-## Title: AeryArcane
+## Title: ArcaneSoulHelper
 ## Notes: Arcane Soul countdown and remaining Arcane Barrage casts, for Sunfury Arcane mages.
 ## DefaultState: Enabled
 ## Author: Aerylea-TarrenMill-EU
-## Version: 1.2.0
-## SavedVariables: AeryArcaneDB
+## Version: 1.3.0
+## SavedVariables: ArcaneSoulHelperDB
+## X-Curse-Project-ID: 1655372
 
 Config.lua
 Init.lua

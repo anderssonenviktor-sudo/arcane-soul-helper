@@ -1,0 +1,8 @@
+package-as: ArcaneSoulHelper
+
+enable-nolib-creation: no
+
+ignore:
+  - .claude
+  - .vscode
+  - .pkgmeta

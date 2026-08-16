@@ -15,6 +15,9 @@ local maxSpheres = 3
 -- count: 0.12 per cast is never exactly right, but it is never far wrong either. Incrementing
 -- by whole spheres every ~8 casts would be confidently wrong a third of the time instead.
 local sphereChance = 0.12
+-- Below this the estimate is a coin flip wearing a number. In practice only two states clear
+-- it: freshly read out of combat, or enough casts to be sure the count saturated.
+local sphereConfidence = 0.9
 local threshold = 3
 local updateInterval = 0.1
 local template = "Soul in %.1fs"
@@ -26,6 +29,8 @@ local sunfuryTreeId = 39
 local hasSavorTheMoment = false
 local sphereCount = 0
 local castsSinceSync = 0
+-- The count at the last moment it was actually known, which the probability is measured from.
+local syncedSpheres = 0
 local isSupported = false
 
 -- Spec and hero talents both change mid-session, so this is re-evaluated on the same events
@@ -67,7 +72,7 @@ local function SurgeDuration()
     -- always wrong when you pull before the spheres have come back.
     local spheres = math.floor(sphereCount + 0.5)
 
-    if ns.db and ns.db.timing.assumeMaxSpheres then
+    if ns.db and ns.db.timing.sphereMode == "max" then
         spheres = maxSpheres
     end
 
@@ -176,6 +181,7 @@ local function RefreshFromAura()
 
     if count then
         sphereCount = count
+        syncedSpheres = count
         castsSinceSync = 0
     end
 end
@@ -184,21 +190,106 @@ end
 -- out-of-combat reading stands for the whole fight, which is why a pack pulled before the
 -- spheres refilled reported Soul arriving early -- the reading was stale-low, and stale-low
 -- is the only direction it can be wrong in.
-local function AccumulateSphere()
-    local before = math.floor(sphereCount + 0.5)
+-- Odds of exactly this many procs in that many casts. Terms are built from the previous one
+-- rather than from factorials, which keeps the numbers small on long fights.
+local function ProcChance(procs, casts)
+    if procs > casts then
+        return 0
+    end
 
+    local miss = 1 - sphereChance
+    local chance = miss ^ casts
+
+    for step = 1, procs do
+        chance = chance * (casts - step + 1) / step * sphereChance / miss
+    end
+
+    return chance
+end
+
+-- How likely the rounded estimate is to be the true count -- which is a different question from
+-- how close the estimate is. In practice it only clears a high bar in two places: within a cast
+-- or so of a sync, where nothing has had time to change, and once enough casts have passed to
+-- be sure the count saturated. The long middle stretch is a coin flip whatever the estimate says.
+local function ConfidenceInEstimate()
+    -- The one genuine certainty: synced at the cap, where nothing can add to the count and
+    -- only Surge takes it away -- and Surge resyncs. Anything below the cap is a claim about
+    -- how many procs have happened since, including the claim that none have.
+    if syncedSpheres >= maxSpheres then
+        return 1
+    end
+
+    local estimate = math.floor(sphereCount + 0.5)
+    local needed = math.max(0, estimate - syncedSpheres)
+
+    -- At the cap every outcome at or above the shortfall gives the same answer, so they all
+    -- count as correct. Below it only the exact number does -- zero included, which is the
+    -- case that used to be mistaken for certainty.
+    if estimate < maxSpheres then
+        return ProcChance(needed, castsSinceSync)
+    end
+
+    local below = 0
+
+    for procs = 0, needed - 1 do
+        below = below + ProcChance(procs, castsSinceSync)
+    end
+
+    return 1 - below
+end
+
+-- Only meaningful while predicting. Assuming the maximum is a stated preference rather than a
+-- guess, so it never reports uncertainty even when it happens to be wrong.
+local function IsUncertain()
+    if not ns.db or ns.db.timing.sphereMode ~= "predict" then
+        return false
+    end
+
+    return ConfidenceInEstimate() < sphereConfidence
+end
+
+local function AccumulateSphere()
     sphereCount = math.min(maxSpheres, sphereCount + sphereChance)
     castsSinceSync = castsSinceSync + 1
+end
 
-    local after = math.floor(sphereCount + 0.5)
+-- Sanity bounds on the reported GCD: the game floors it at 0.75 and it can't exceed 1.5.
+local baseGcd = 1.5
+local minGcd = 0.7
+local gcdSpellId = 61304
 
-    -- Logged on the rounded value rather than every cast, since that's the number the duration
-    -- actually uses. Compare against the stack count on your own buff bar, which the client
-    -- still renders even though the value is secret to us.
-    if ns.logging and after ~= before then
-        print(("|cff88ccffsphere|r predict %d -> %d  after %d casts (estimate %.2f)")
-            :format(before, after, castsSinceSync, sphereCount))
+-- The GCD is client-predicted: the client starts it on your keypress without waiting for the
+-- server, so its length and end time are local values with no network jitter in them at all.
+-- Everything here used to be inferred from the gaps between cast events, which could only ever
+-- be as steady as packet arrival -- about 35ms of scatter either side of the truth.
+--
+-- Returns the GCD's length and the moment it ends, or nothing while none is running. Knowing
+-- the end matters as much as the length: a window opening part-way through some other cast's
+-- cooldown is waiting out the remainder, not a whole one, and the soul timer needs it to say
+-- whether the GCD you are currently serving will carry you into the window.
+local lastKnownGcd
+
+local function ReadGcd()
+    local info = C_Spell.GetSpellCooldown(gcdSpellId)
+
+    -- duration is only meaningful while the cooldown is running; idle it reports zero.
+    if info and info.isActive then
+        local duration, startTime = info.duration, info.startTime
+
+        -- Cooldown secrecy is contextual, so guard on the values rather than trusting a flag.
+        local readable = duration and startTime
+            and not (issecretvalue and (issecretvalue(duration) or issecretvalue(startTime)))
+
+        if readable and duration >= minGcd and duration <= baseGcd then
+            lastKnownGcd = duration
+            return duration, startTime + duration
+        end
     end
+
+    -- Nothing running to report an end time for, but the length still stands: it only moves
+    -- when haste does. Without this the counter would go blank the moment a queue is missed,
+    -- which is exactly when it needs to keep recounting.
+    return lastKnownGcd
 end
 
 local frame = CreateFrame("Frame", nil, UIParent)
@@ -276,6 +367,10 @@ function frame:Begin()
     self.timer = C_Timer.NewTimer(duration - threshold, function()
         self.timer = nil
 
+        -- Tracked so the colour is only pushed on a transition. Nil to begin with, so the
+        -- first update always paints rather than inheriting whatever the last countdown left.
+        local wasReady
+
         local function Update()
             local remaining = ending - GetTime()
 
@@ -285,6 +380,22 @@ function frame:Begin()
             end
 
             self.text:SetText(template:format(remaining))
+
+            -- Green once the GCD you are currently serving ends inside the window: a Barrage
+            -- queued now fires after Soul begins. Idle doesn't count -- pressing with nothing
+            -- running lands the cast immediately, which is before the window opens.
+            local _, gcdEndsAt = ReadGcd()
+            local ready = ns.db.soulTimer.showReady
+                and gcdEndsAt ~= nil and gcdEndsAt >= ending
+
+            if ready ~= wasReady then
+                wasReady = ready
+
+                local settings = ns.db.soulTimer
+
+                self.text:SetTextColor(ns.UnpackColor(
+                    ready and settings.readyColor or settings.color))
+            end
         end
 
         Update()
@@ -297,10 +408,6 @@ end
 
 local arcaneBarrageId = 44425
 local arcaneSoulDuration = 4
--- Sanity bounds on the reported GCD: the game floors it at 0.75 and it can't exceed 1.5.
-local baseGcd = 1.5
-local minGcd = 0.7
-local gcdSpellId = 61304
 
 local soulFrame = CreateFrame("Frame", nil, UIParent)
 soulFrame:SetSize(1, 1)
@@ -323,6 +430,7 @@ function soulFrame:Stop()
     end
 
     self.expirationTime = nil
+    self.assumedGcdEnd = nil
     self:Hide()
 end
 
@@ -407,39 +515,6 @@ ns.OnApply(function()
     end
 end)
 
--- The GCD is client-predicted: the client starts it on your keypress without waiting for the
--- server, so its length and end time are local values with no network jitter in them at all.
--- Everything here used to be inferred from the gaps between cast events, which could only ever
--- be as steady as packet arrival -- about 35ms of scatter either side of the truth.
---
--- Returns the GCD's length and the moment it ends, or nothing while none is running. Knowing
--- the end matters as much as the length: a window opening part-way through some other cast's
--- cooldown is waiting out the remainder, not a whole one.
-local lastKnownGcd
-
-local function ReadGcd()
-    local info = C_Spell.GetSpellCooldown(gcdSpellId)
-
-    -- duration is only meaningful while the cooldown is running; idle it reports zero.
-    if info and info.isActive then
-        local duration, startTime = info.duration, info.startTime
-
-        -- Cooldown secrecy is contextual, so guard on the values rather than trusting a flag.
-        local readable = duration and startTime
-            and not (issecretvalue and (issecretvalue(duration) or issecretvalue(startTime)))
-
-        if readable and duration >= minGcd and duration <= baseGcd then
-            lastKnownGcd = duration
-            return duration, startTime + duration
-        end
-    end
-
-    -- Nothing running to report an end time for, but the length still stands: it only moves
-    -- when haste does. Without this the counter would go blank the moment a queue is missed,
-    -- which is exactly when it needs to keep recounting.
-    return lastKnownGcd
-end
-
 -- updateDisplay is false for the idle ticker and true when a Barrage cast or the window
 -- opening should refresh the prediction. justCast marks the Barrage path specifically: the
 -- GCD takes a frame or two to register, so the client can still report us off it right
@@ -459,30 +534,37 @@ function soulFrame:Recalc(updateDisplay, justCast)
         return
     end
 
-    local onGcd = gcdEndsAt ~= nil or justCast
-
-    -- Frozen while on the GCD, because the earliest next press is pinned to the end of the
-    -- current one and the answer can't change. Once it lapses the earliest press is "now",
-    -- which slides with every tick, so a fumbled queue has to keep recounting.
-    if not updateDisplay and onGcd then
-        return
-    end
-
-    -- Everything hinges on when the next press can actually go off. The client's end time is
-    -- exact, remainder and all, which matters most when the window opens part-way through some
-    -- unrelated cast's cooldown. The other two branches only cover the frame or two after a
-    -- press before the GCD registers, and standing idle with nothing running.
+    -- Everything hinges on when the next press can actually go off.
     local nextPress
 
     if justCast then
         -- The press that triggered this just started a GCD the client hasn't registered yet,
-        -- so a live read still describes the *previous* one -- already part-spent, and about
-        -- to expire. Using it would place the next press early and count one press too many.
-        nextPress = now + gcd
+        -- so a live read still describes the previous one -- already part-spent and about to
+        -- expire. Using it would place the next press early and count one too many.
+        --
+        -- Recorded rather than just used, so the rest of this GCD is judged the same way. The
+        -- idle ticker consults the live read, which can call you free before our own deadline
+        -- and contradict the count we just gave -- the display then flickers back after hiding.
+        self.assumedGcdEnd = now + gcd
+        nextPress = self.assumedGcdEnd
+    elseif self.assumedGcdEnd and self.assumedGcdEnd > now then
+        nextPress = self.assumedGcdEnd
     elseif gcdEndsAt then
+        -- No press of ours is outstanding, so the client's end time is exact, remainder and
+        -- all. This is what makes a window opening mid-cooldown count correctly.
         nextPress = gcdEndsAt
     else
         nextPress = now
+    end
+
+    -- On the GCD precisely when the next press is still ahead of us.
+    local onGcd = nextPress > now
+
+    -- Frozen while on the GCD, because the earliest next press is pinned and the answer can't
+    -- change. Once it lapses the earliest press is "now", which slides with every tick, so a
+    -- fumbled queue has to keep recounting.
+    if not updateDisplay and onGcd then
+        return
     end
 
     -- Presses land at nextPress, +gcd, +2gcd ... and one arriving exactly as the window
@@ -618,6 +700,42 @@ ns.OnApply(function()
     end
 end)
 
+-- Shown as Arcane Surge goes out, when the sphere count its duration rests on isn't trustworthy.
+-- Borrows the soul timer's position and size, which is safe because the two can never appear
+-- together: this fires at the cast, the countdown only in the last seconds before Soul.
+local warningMessage = "Spheres uncertain"
+local warningColor = "ffffb840"
+local warningDuration = 4
+
+local warningFrame = CreateFrame("Frame", nil, UIParent)
+warningFrame:SetSize(1, 1)
+warningFrame.text = warningFrame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+warningFrame.text:SetPoint("CENTER", warningFrame)
+warningFrame.text:SetText(warningMessage)
+warningFrame:Hide()
+
+function warningFrame:Flash()
+    if self.timer then
+        self.timer:Cancel()
+    end
+
+    self:Show()
+
+    self.timer = C_Timer.NewTimer(warningDuration, function()
+        self.timer = nil
+        self:Hide()
+    end)
+end
+
+ns.OnApply(function()
+    local settings = ns.db.soulTimer
+
+    warningFrame:ClearAllPoints()
+    warningFrame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
+    warningFrame.text:SetFont(fontPath, settings.size, "OUTLINE")
+    warningFrame.text:SetTextColor(ns.UnpackColor(warningColor))
+end)
+
 -- One handler for everything. Three frames used to register the same events and each re-check
 -- the same spell ids, which meant the order of operations depended on which frame happened to
 -- register first -- a silent dependency that broke the counter once already.
@@ -661,19 +779,32 @@ events:SetScript("OnEvent", function(_, event, _, _, spellId)
         -- An actual cast outranks the preview, whichever modules happen to be enabled.
         ns.SetPreview(false)
 
+        local uncertain = IsUncertain()
+
         if ns.logging then
-            print(("|cff88ccffsurge|r spheres %.2f -> %d  talent %s  ->  soul in %.1fs"):format(
-                sphereCount, math.floor(sphereCount + 0.5), tostring(hasSavorTheMoment),
-                SurgeDuration()))
+            print(("|cff88ccffsurge|r spheres %.2f -> %d (%d%%%s)  talent %s  ->  soul in %.1fs")
+                :format(sphereCount, math.floor(sphereCount + 0.5),
+                    ConfidenceInEstimate() * 100, uncertain and ", uncertain" or "",
+                    tostring(hasSavorTheMoment), SurgeDuration()))
+        end
+
+        if uncertain and ns.db.timing.warnUncertain then
+            warningFrame:Flash()
         end
 
         -- Both displays derive this Surge's duration from the pre-Surge sphere count, so they
         -- start before it is cleared. Ordering these explicitly is what lets the reset happen
         -- inline -- it used to need deferring by a frame to win a race between three handlers.
-        frame:Begin()
-        soulFrame:Begin()
+        --
+        -- Neither starts at all when the count behind that duration is a guess: the whole
+        -- window would be off by the same amount, so there's nothing worth showing.
+        if not (uncertain and ns.db.timing.hideUncertain) then
+            frame:Begin()
+            soulFrame:Begin()
+        end
 
         sphereCount = 0
+        syncedSpheres = 0
         castsSinceSync = 0
 
         return

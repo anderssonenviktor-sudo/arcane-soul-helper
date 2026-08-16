@@ -17,7 +17,7 @@ end
 -- saving is handled for us; the callback only has to push the change onto the live frames.
 local function Register(category, key, variableKey, variableType, name)
     local setting = Settings.RegisterAddOnSetting(category,
-        ("AERYARCANE_%s_%s"):format(key:upper(), variableKey:upper()),
+        ("ARCANESOULHELPER_%s_%s"):format(key:upper(), variableKey:upper()),
         variableKey, ns.db[key], variableType, name, ns.defaults[key][variableKey])
 
     setting:SetValueChangedCallback(ns.Apply)
@@ -49,6 +49,16 @@ local function AddModule(category, layout, key, title, labels)
     Settings.CreateColorSwatch(category,
         Add("color", Settings.VarType.String, labels.color or "Colour"))
 
+    if defaults.showReady ~= nil then
+        Settings.CreateCheckbox(category,
+            Add("showReady", Settings.VarType.Boolean, "Recolour when safe to queue"),
+            "Turn the countdown a different colour once the global cooldown you are serving"
+                .. " ends inside the Soul window, so a Barrage queued now lands after it opens.")
+
+        Settings.CreateColorSwatch(category,
+            Add("readyColor", Settings.VarType.String, "Colour when safe to queue"))
+    end
+
     if defaults.lastColor then
         Settings.CreateColorSwatch(category,
             Add("lastColor", Settings.VarType.String, "Colour on last cast"))
@@ -64,15 +74,45 @@ local function AddModule(category, layout, key, title, labels)
     Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRange)
 end
 
+local function GetSphereModeOptions()
+    local container = Settings.CreateControlTextContainer()
+
+    container:Add("predict", "Predictive",
+        "Estimate the count from how much you have cast since it was last known. Accurate"
+            .. " except shortly after pulling without a full set.")
+    container:Add("max", "Always assume 3 spheres",
+        "Never estimate. Correct unless you pull before the spheres have regenerated.")
+
+    return container:GetData()
+end
+
 local function AddTiming(category, layout)
     layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Surge Duration"))
 
-    Settings.CreateCheckbox(category,
-        Register(category, "timing", "assumeMaxSpheres", Settings.VarType.Boolean,
-            "Always assume maximum spheres"),
-        "Arcane Surge lasts 0.8s longer per Spellfire Sphere. The count can't be read in"
-            .. " combat, so it is estimated from how much you have cast. Turn this on to always"
-            .. " assume three instead: steadier, but wrong when you pull before they regenerate.")
+    local mode = Settings.CreateDropdown(category,
+        Register(category, "timing", "sphereMode", Settings.VarType.String, "Sphere count"),
+        GetSphereModeOptions,
+        "Arcane Surge lasts 0.8s longer per Spellfire Sphere, and the count can't be read"
+            .. " while in combat. This decides what to assume when it isn't known.")
+
+    -- Both only mean anything while predicting, so they hang off the mode and vanish under
+    -- "always assume 3", where there is no uncertainty to report.
+    local function IsPredicting()
+        return ns.db.timing.sphereMode == "predict"
+    end
+
+    local hide = Settings.CreateCheckbox(category,
+        Register(category, "timing", "hideUncertain", Settings.VarType.Boolean,
+            "Hide when uncertain"),
+        "Show nothing at all when the sphere count is too uncertain to trust, rather than a"
+            .. " countdown that may be a second out.")
+    hide:SetParentInitializer(mode, IsPredicting)
+
+    local warn = Settings.CreateCheckbox(category,
+        Register(category, "timing", "warnUncertain", Settings.VarType.Boolean,
+            "Warn when uncertain"),
+        "Show a warning as Arcane Surge is cast when the sphere count isn't reliable.")
+    warn:SetParentInitializer(mode, IsPredicting)
 end
 
 -- Preview runs whenever our page is the one on screen, so both frames can be positioned and
@@ -83,11 +123,11 @@ local function UpdatePreview()
 end
 
 function ns.BuildOptions()
-    local category, layout = Settings.RegisterVerticalLayoutCategory("AeryArcane")
+    local category, layout = Settings.RegisterVerticalLayoutCategory("ArcaneSoulHelper")
 
     AddModule(category, layout, "soulTimer", "Arcane Soul Timer")
     AddModule(category, layout, "barrage", "Barrage Counter")
-    AddModule(category, layout, "spheres", "Sphere Warning", {
+    AddModule(category, layout, "spheres", "Sphere Display (out of combat)", {
         size = "Icon size",
         color = "Text colour",
     })
@@ -103,13 +143,13 @@ function ns.BuildOptions()
     hooksecurefunc(SettingsPanel, "SetCurrentCategory", UpdatePreview)
 end
 
-SLASH_AERYARCANE1 = "/aeryarcane"
-SLASH_AERYARCANE2 = "/aa"
-SLASH_AERYARCANE3 = "/soul"
-SlashCmdList["AERYARCANE"] = function(msg)
+SLASH_ARCANESOULHELPER1 = "/arcanesoulhelper"
+SLASH_ARCANESOULHELPER2 = "/ash"
+SLASH_ARCANESOULHELPER3 = "/soul"
+SlashCmdList["ARCANESOULHELPER"] = function(msg)
     if msg == "log" then
         ns.logging = not ns.logging
-        print(("|cffbb88ffAeryArcane|r: soul log %s"):format(ns.logging and "on" or "off"))
+        print(("|cffbb88ffArcaneSoulHelper|r: soul log %s"):format(ns.logging and "on" or "off"))
         return
     end
 

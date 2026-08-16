@@ -13,6 +13,10 @@ ns.defaults = {
     soulTimer = {
         enabled = true,
         color = "ffbf73f2",
+        -- Recolours once the current global cooldown ends inside the Soul window, meaning a
+        -- Barrage queued now will land after it opens.
+        showReady = true,
+        readyColor = "ff55dd55",
         size = 26,
         x = 0,
         y = -70,
@@ -30,7 +34,9 @@ ns.defaults = {
     },
     -- Not a display module, so it has no section of the shared enabled/colour/size shape.
     timing = {
-        assumeMaxSpheres = false,
+        sphereMode = "predict",
+        hideUncertain = false,
+        warnUncertain = true,
     },
     barrage = {
         enabled = true,
@@ -117,9 +123,16 @@ loader:SetScript("OnEvent", function(self, _, loaded)
 
     self:UnregisterEvent("ADDON_LOADED")
 
-    AeryArcaneDB = AeryArcaneDB or {}
-    FillDefaults(AeryArcaneDB, ns.defaults)
-    ns.db = AeryArcaneDB
+    ArcaneSoulHelperDB = ArcaneSoulHelperDB or {}
+    FillDefaults(ArcaneSoulHelperDB, ns.defaults)
+    ns.db = ArcaneSoulHelperDB
+
+    -- The old boolean became a mode selector; carry anyone who had it switched on across.
+    if ns.db.timing.assumeMaxSpheres then
+        ns.db.timing.sphereMode = "max"
+    end
+
+    ns.db.timing.assumeMaxSpheres = nil
 
     ns.BuildOptions()
     ns.Apply()
