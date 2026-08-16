@@ -5,7 +5,28 @@ if not ns.active then
 end
 
 local sizeRange = { min = 8, max = 72, step = 1 }
-local offsetRange = { min = -600, max = 600, step = 1 }
+
+-- Offsets are UIParent units, so how far the sliders have to reach depends on the screen they
+-- land on: an ultrawide at a low UI scale is several thousand units across, where a fixed range
+-- strands the display near the middle. Half the screen in each direction puts every on-screen
+-- position within reach without allowing one so far out it can't be seen. Measured when the
+-- options are built rather than at load, so a UI scale another addon sets is already applied.
+local offsetRanges
+
+local function MeasureOffsetRanges()
+    -- Never narrower than the range this shipped with, so nobody's existing position falls
+    -- outside the slider on a screen whose half-width is smaller than that.
+    local function Range(extent)
+        local limit = math.max(600, math.ceil(extent / 2))
+
+        return { min = -limit, max = limit, step = 1 }
+    end
+
+    offsetRanges = {
+        x = Range(UIParent:GetWidth()),
+        y = Range(UIParent:GetHeight()),
+    }
+end
 
 local function Slider(category, setting, range)
     local options = Settings.CreateSliderOptions(range.min, range.max, range.step)
@@ -70,8 +91,8 @@ local function AddModule(category, layout, key, title, labels)
         Slider(category, Add("fontSize", Settings.VarType.Number, "Font size"), sizeRange)
     end
 
-    Slider(category, Add("x", Settings.VarType.Number, "Horizontal offset"), offsetRange)
-    Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRange)
+    Slider(category, Add("x", Settings.VarType.Number, "Horizontal offset"), offsetRanges.x)
+    Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRanges.y)
 end
 
 local function GetSphereModeOptions()
@@ -123,6 +144,8 @@ local function UpdatePreview()
 end
 
 function ns.BuildOptions()
+    MeasureOffsetRanges()
+
     local category, layout = Settings.RegisterVerticalLayoutCategory("ArcaneSoulHelper")
 
     AddModule(category, layout, "soulTimer", "Arcane Soul Timer")

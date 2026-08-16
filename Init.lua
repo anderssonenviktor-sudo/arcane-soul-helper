@@ -186,10 +186,6 @@ local function RefreshFromAura()
     end
 end
 
--- Blind once combat starts, so accumulate what the casts are worth. Without this the last
--- out-of-combat reading stands for the whole fight, which is why a pack pulled before the
--- spheres refilled reported Soul arriving early -- the reading was stale-low, and stale-low
--- is the only direction it can be wrong in.
 -- Odds of exactly this many procs in that many casts. Terms are built from the previous one
 -- rather than from factorials, which keeps the numbers small on long fights.
 local function ProcChance(procs, casts)
@@ -248,7 +244,32 @@ local function IsUncertain()
     return ConfidenceInEstimate() < sphereConfidence
 end
 
-local function AccumulateSphere()
+-- Only damaging casts roll for a sphere, so this is a whitelist rather than a list of things to
+-- skip: the rotation is a closed set, where the utility that can be woven into it is not. An
+-- unrecognised spell contributes nothing, which errs toward a stale-low estimate -- the one
+-- direction the model is built to tolerate and warn about.
+local sphereGenerators = {
+    [30451] = true,  -- Arcane Blast
+    [44425] = true,  -- Arcane Barrage
+    [5143] = true,   -- Arcane Missiles
+    [1449] = true,   -- Arcane Explosion
+    [153626] = true, -- Arcane Orb
+}
+
+-- Blind once combat starts, so accumulate what the casts are worth. Without this the last
+-- out-of-combat reading stands for the whole fight, which is why a pack pulled before the
+-- spheres refilled reported Soul arriving early -- the reading was stale-low, and stale-low
+-- is the only direction it can be wrong in.
+--
+-- Both counters move together or not at all. Charging castsSinceSync for a Blink would tell
+-- ConfidenceInEstimate that evidence had accumulated when nothing had been rolled, which reads
+-- as growing certainty and silences the uncertainty warning at the exact moment the estimate
+-- has drifted furthest.
+local function AccumulateSphere(spellId)
+    if not sphereGenerators[spellId] then
+        return
+    end
+
     sphereCount = math.min(maxSpheres, sphereCount + sphereChance)
     castsSinceSync = castsSinceSync + 1
 end
@@ -290,6 +311,23 @@ local function ReadGcd()
     -- when haste does. Without this the counter would go blank the moment a queue is missed,
     -- which is exactly when it needs to keep recounting.
     return lastKnownGcd
+end
+
+-- A hard cast holds you past the GCD it started -- Arcane Blast outruns it at any realistic
+-- haste -- so the GCD alone doesn't say when you are next free.
+--
+-- Channels are deliberately not read here. They can be clipped by the next press, so once the
+-- GCD they started has lapsed there is nothing left to wait for, and treating a channel as a
+-- commitment would hold the answer back for the rest of its duration.
+local function CastEndsAt()
+    local _, _, _, _, endTime = UnitCastingInfo("player")
+
+    if not endTime then
+        return nil
+    end
+
+    -- Cast times come back in milliseconds, unlike everything else on GetTime()'s clock.
+    return endTime / 1000
 end
 
 local frame = CreateFrame("Frame", nil, UIParent)
@@ -372,7 +410,8 @@ function frame:Begin()
         local wasReady
 
         local function Update()
-            local remaining = ending - GetTime()
+            local now = GetTime()
+            local remaining = ending - now
 
             if remaining <= 0 then
                 self:Stop()
@@ -381,12 +420,14 @@ function frame:Begin()
 
             self.text:SetText(template:format(remaining))
 
-            -- Green once the GCD you are currently serving ends inside the window: a Barrage
-            -- queued now fires after Soul begins. Idle doesn't count -- pressing with nothing
-            -- running lands the cast immediately, which is before the window opens.
+            -- Green once the earliest a queued press can land falls inside the window: a Barrage
+            -- queued now fires after Soul begins. What holds you is whichever of the GCD and the
+            -- cast in progress finishes last, usually the cast. Idle falls out of the same
+            -- comparison rather than needing a case of its own: with nothing running the press
+            -- lands now, and now is always before the window opens.
             local _, gcdEndsAt = ReadGcd()
-            local ready = ns.db.soulTimer.showReady
-                and gcdEndsAt ~= nil and gcdEndsAt >= ending
+            local landsAt = math.max(now, gcdEndsAt or 0, CastEndsAt() or 0)
+            local ready = ns.db.soulTimer.showReady and landsAt >= ending
 
             if ready ~= wasReady then
                 wasReady = ready
@@ -557,13 +598,22 @@ function soulFrame:Recalc(updateDisplay, justCast)
         nextPress = now
     end
 
-    -- On the GCD precisely when the next press is still ahead of us.
-    local onGcd = nextPress > now
+    -- A cast in progress can only push the next press later than the GCD reasoning above
+    -- concluded, never earlier, so it applies to every branch alike. This is what stops a window
+    -- that opens mid-Arcane-Blast from assuming a press can go off immediately: the GCD that
+    -- cast started has usually lapsed by then, which otherwise reads as being free.
+    local castEndsAt = CastEndsAt()
 
-    -- Frozen while on the GCD, because the earliest next press is pinned and the answer can't
-    -- change. Once it lapses the earliest press is "now", which slides with every tick, so a
-    -- fumbled queue has to keep recounting.
-    if not updateDisplay and onGcd then
+    nextPress = math.max(nextPress, castEndsAt or 0)
+
+    -- Held precisely when the next press is still ahead of us, whether by the GCD or a cast.
+    local held = nextPress > now
+
+    -- Frozen while held, because the earliest next press is pinned and the answer can't change.
+    -- Once it lapses the earliest press is "now", which slides with every tick, so a fumbled
+    -- queue has to keep recounting. A cancelled cast recovers on the following tick, where the
+    -- read comes back empty and the count is live again.
+    if not updateDisplay and held then
         return
     end
 
@@ -572,12 +622,18 @@ function soulFrame:Recalc(updateDisplay, justCast)
     local moreFits = math.ceil((self.expirationTime - nextPress) / gcd)
 
     if ns.logging then
-        print(("|cff88ccffsoul|r gcd %.3f  end %s  rem %.3f  next +%.3f  fits %d"):format(
-            gcd,
-            gcdEndsAt and ("+%.3f"):format(gcdEndsAt - now) or "idle",
-            remaining,
-            nextPress - now,
-            moreFits))
+        -- started is the client's own view of when this GCD began, relative to the event that
+        -- got us here. Consecutive casts can't begin closer together than one GCD, so this is
+        -- what says whether the live read describes the press we just made or a staler one.
+        print(("|cff88ccffsoul|r gcd %.3f  end %s  started %s  cast %s  rem %.3f  next +%.3f"
+            .. "  fits %d"):format(
+                gcd,
+                gcdEndsAt and ("+%.3f"):format(gcdEndsAt - now) or "idle",
+                gcdEndsAt and ("%.3f"):format(gcdEndsAt - gcd - now) or "-",
+                castEndsAt and ("+%.3f"):format(castEndsAt - now) or "none",
+                remaining,
+                nextPress - now,
+                moreFits))
     end
 
     if moreFits <= 0 then
@@ -811,7 +867,15 @@ events:SetScript("OnEvent", function(_, event, _, _, spellId)
     end
 
     if InCombatLockdown() then
-        AccumulateSphere()
+        AccumulateSphere(spellId)
+    end
+
+    -- Every cast inside the window, not just Barrage: anything else that lands here started a
+    -- GCD of its own, which Recalc never sees and which would explain the read drifting behind
+    -- the presses it is supposed to be describing.
+    if ns.logging and soulFrame.expirationTime then
+        print(("|cff88ccffcast|r %s (%d)  rem %.3f"):format(
+            C_Spell.GetSpellName(spellId) or "?", spellId, soulFrame.expirationTime - GetTime()))
     end
 
     if spellId == arcaneBarrageId and soulFrame.expirationTime then
