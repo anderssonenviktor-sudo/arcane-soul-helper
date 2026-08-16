@@ -474,10 +474,13 @@ function soulFrame:Recalc(updateDisplay, justCast)
     -- press before the GCD registers, and standing idle with nothing running.
     local nextPress
 
-    if gcdEndsAt then
-        nextPress = gcdEndsAt
-    elseif onGcd then
+    if justCast then
+        -- The press that triggered this just started a GCD the client hasn't registered yet,
+        -- so a live read still describes the *previous* one -- already part-spent, and about
+        -- to expire. Using it would place the next press early and count one press too many.
         nextPress = now + gcd
+    elseif gcdEndsAt then
+        nextPress = gcdEndsAt
     else
         nextPress = now
     end
