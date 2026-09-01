@@ -95,6 +95,39 @@ local function AddModule(category, layout, key, title, labels)
     Slider(category, Add("y", Settings.VarType.Number, "Vertical offset"), offsetRanges.y)
 end
 
+local function GetFontOptions()
+    local container = Settings.CreateControlTextContainer()
+    local fonts = ns.sharedMedia:List(ns.sharedMedia.MediaType.FONT)
+    local selected = ns.db.appearance.font
+    local selectedFound = false
+
+    for _, font in ipairs(fonts) do
+        container:Add(font, font)
+
+        if font == selected then
+            selectedFound = true
+        end
+    end
+
+    -- Preserve a choice supplied by a media pack that has since been disabled. The live text
+    -- uses SharedMedia's fallback until that pack returns, while the dropdown explains why.
+    if not selectedFound then
+        container:Add(selected, selected .. " (unavailable)")
+    end
+
+    return container:GetData()
+end
+
+local function AddAppearance(category, layout)
+    layout:AddInitializer(CreateSettingsListSectionHeaderInitializer("Appearance"))
+
+    Settings.CreateDropdown(category,
+        Register(category, "appearance", "font", Settings.VarType.String, "Font"),
+        GetFontOptions,
+        "Choose from fonts registered with LibSharedMedia. Install a SharedMedia font pack"
+            .. " to add more choices.")
+end
+
 local function GetSphereModeOptions()
     local container = Settings.CreateControlTextContainer()
 
@@ -148,6 +181,7 @@ function ns.BuildOptions()
 
     local category, layout = Settings.RegisterVerticalLayoutCategory("ArcaneSoulHelper")
 
+    AddAppearance(category, layout)
     AddModule(category, layout, "soulTimer", "Arcane Soul Timer")
     AddModule(category, layout, "barrage", "Barrage Counter")
     AddModule(category, layout, "spheres", "Sphere Display (out of combat)", {

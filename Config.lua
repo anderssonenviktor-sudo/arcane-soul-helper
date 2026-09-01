@@ -10,6 +10,9 @@ end
 -- identical on first load. Colours are AARRGGBB hex because that is the form the Settings
 -- colour swatch reads and writes, so the DB stores exactly what the control hands back.
 ns.defaults = {
+    appearance = {
+        font = "Friz Quadrata TT",
+    },
     soulTimer = {
         enabled = true,
         color = "ffbf73f2",
@@ -96,6 +99,26 @@ function ns.UnpackColor(hex)
 
     return color:GetRGB()
 end
+
+-- Keep the SharedMedia handle in the DB rather than its path. Media packs can register the
+-- same handle from any location, and Fetch gives us the library default if a saved font is no
+-- longer installed.
+local sharedMedia = LibStub("LibSharedMedia-3.0")
+
+function ns.GetFontPath()
+    return sharedMedia:Fetch(sharedMedia.MediaType.FONT, ns.db.appearance.font)
+end
+
+ns.sharedMedia = sharedMedia
+
+-- Media packs can load after this addon. If the saved font arrives later in the loading
+-- sequence, replace the temporary fallback as soon as SharedMedia registers it.
+sharedMedia.RegisterCallback(ns, "LibSharedMedia_Registered", function(_, mediaType, key)
+    if mediaType == sharedMedia.MediaType.FONT and ns.db
+        and ns.db.appearance.font == key then
+        ns.Apply()
+    end
+end)
 
 -- Only fills in what's missing, so settings survive an addon update that adds new keys.
 local function FillDefaults(target, defaults)

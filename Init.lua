@@ -336,7 +336,6 @@ frame.timer = nil
 frame.ticker = nil
 frame.text = frame:CreateFontString(nil, "OVERLAY", "GameTooltipText")
 frame.text:SetPoint("CENTER", frame)
-local fontPath = frame.text:GetFont()
 frame:Hide()
 
 function frame:Stop()
@@ -379,7 +378,7 @@ ns.OnApply(function()
 
     frame:ClearAllPoints()
     frame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
-    frame.text:SetFont(fontPath, settings.size, "OUTLINE")
+    frame.text:SetFont(ns.GetFontPath(), settings.size, "OUTLINE")
     frame.text:SetTextColor(ns.UnpackColor(settings.color))
 
     -- Turning the module off mid-countdown has to tear down what's already running.
@@ -539,7 +538,7 @@ ns.OnApply(function()
 
     soulFrame:ClearAllPoints()
     soulFrame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
-    soulFrame.text:SetFont(fontPath, settings.size, "OUTLINE")
+    soulFrame.text:SetFont(ns.GetFontPath(), settings.size, "OUTLINE")
 
     if not settings.enabled then
         soulFrame:Stop()
@@ -746,7 +745,7 @@ ns.OnApply(function()
     sphereDisplay:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
     -- Heavier outline than the text displays use: this one sits on top of icon art rather than
     -- on the background, so a thin edge disappears against the brighter parts.
-    sphereDisplay.count:SetFont(fontPath, settings.fontSize, "THICKOUTLINE")
+    sphereDisplay.count:SetFont(ns.GetFontPath(), settings.fontSize, "THICKOUTLINE")
     sphereDisplay.count:SetTextColor(ns.UnpackColor(settings.color))
 
     if ns.previewing then
@@ -788,7 +787,7 @@ ns.OnApply(function()
 
     warningFrame:ClearAllPoints()
     warningFrame:SetPoint("CENTER", UIParent, "CENTER", settings.x, settings.y)
-    warningFrame.text:SetFont(fontPath, settings.size, "OUTLINE")
+    warningFrame.text:SetFont(ns.GetFontPath(), settings.size, "OUTLINE")
     warningFrame.text:SetTextColor(ns.UnpackColor(warningColor))
 end)
 
